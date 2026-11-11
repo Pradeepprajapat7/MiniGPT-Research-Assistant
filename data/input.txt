@@ -1,0 +1,109 @@
+# Introduction to Artificial Intelligence
+
+Artificial Intelligence is a field of computer science that focuses on developing machines capable of performing tasks that normally require human intelligence. These tasks include reasoning, learning, problem-solving, language understanding, and decision-making.
+
+An artificial intelligence system learns patterns from data and uses those patterns to make predictions or generate useful outputs. Modern AI systems use mathematical models, optimization algorithms, and computational resources to solve complex problems.
+
+# Machine Learning
+
+Machine Learning is a subfield of artificial intelligence that enables computers to learn from data without explicitly programming every rule. A machine learning model identifies patterns in training data and uses them to make predictions on unseen examples.
+
+Machine learning can be divided into three major categories: supervised learning, unsupervised learning, and reinforcement learning.
+
+Supervised learning uses labeled datasets. Each training example contains input features and a corresponding target value. Classification and regression are common supervised learning tasks.
+
+Unsupervised learning discovers hidden structures in unlabeled data. Clustering and dimensionality reduction are common unsupervised learning techniques.
+
+Reinforcement learning trains an agent to make decisions through interactions with an environment. The agent receives rewards or penalties based on its actions and learns a policy that maximizes long-term reward.
+
+# Deep Learning
+
+Deep Learning is a specialized area of machine learning that uses artificial neural networks with multiple layers. These networks automatically learn hierarchical representations from large datasets.
+
+A neural network consists of an input layer, one or more hidden layers, and an output layer. Each neuron receives numerical inputs, applies weights and biases, and passes the result through an activation function.
+
+Training a neural network involves forward propagation, loss calculation, backpropagation, and optimization. Gradient descent and its variants are widely used to minimize the training loss.
+
+# Natural Language Processing
+
+Natural Language Processing, commonly called NLP, is a branch of artificial intelligence that enables computers to understand, process, analyze, and generate human language.
+
+NLP applications include text classification, sentiment analysis, machine translation, named entity recognition, question answering, summarization, and conversational systems.
+
+Text preprocessing may involve normalization, tokenization, removing unnecessary symbols, and converting words into numerical representations.
+
+Tokenization is the process of dividing text into smaller units called tokens. A token may represent a word, subword, character, or special symbol.
+
+# Language Models
+
+A language model learns the statistical structure of language and estimates the probability of a sequence of tokens.
+
+An autoregressive language model predicts the next token based on previously observed tokens.
+
+For example, given the sequence "Artificial intelligence is", a language model may predict the next token as "powerful".
+
+The probability of a complete sequence can be represented as the product of conditional probabilities of its individual tokens.
+
+# Transformers
+
+The Transformer is a neural network architecture based on attention mechanisms. It was introduced to process sequential data more efficiently than traditional recurrent architectures.
+
+The Transformer architecture contains attention layers, feed-forward neural networks, normalization layers, and residual connections.
+
+Self-attention allows each token to examine other tokens in a sequence and determine which tokens are important for understanding its context.
+
+The attention mechanism uses three important representations: Query, Key, and Value.
+
+Scaled dot-product attention is calculated using the formula:
+
+Attention(Q,K,V) = softmax(QK^T / sqrt(d_k))V
+
+Multi-head attention performs multiple attention operations in parallel. This allows the model to capture different relationships between tokens.
+
+Positional encoding provides information about token positions because self-attention alone does not understand sequence order.
+
+# Large Language Models
+
+Large Language Models, also known as LLMs, are neural networks trained on large text datasets to understand and generate human language.
+
+LLMs commonly use Transformer architectures and autoregressive next-token prediction objectives.
+
+The training process includes tokenization, embedding generation, model initialization, forward propagation, loss calculation, backpropagation, and parameter optimization.
+
+The model learns linguistic patterns, semantic relationships, and contextual information from training data.
+
+# PyTorch
+
+PyTorch is a deep learning framework used to build, train, and evaluate neural networks.
+
+A tensor is the fundamental data structure in PyTorch. Tensors can represent scalars, vectors, matrices, and higher-dimensional arrays.
+
+The torch.nn module provides components for constructing neural network architectures.
+
+The torch.optim module provides optimization algorithms such as Adam and SGD.
+
+Automatic differentiation calculates gradients during backpropagation and helps update model parameters.
+
+# MiniGPT
+
+MiniGPT is a small GPT-style language model designed to understand the fundamental mechanisms behind modern generative language models.
+
+A MiniGPT model typically contains token embeddings, positional embeddings, Transformer decoder blocks, multi-head self-attention, feed-forward networks, and a language modeling output head.
+
+The model is trained using next-token prediction. During training, the model receives a sequence of tokens and learns to predict the next token at every position.
+
+Cross-entropy loss measures the difference between predicted token probabilities and actual target tokens.
+
+During text generation, the model repeatedly predicts the next token and appends it to the existing sequence.
+
+A causal attention mask prevents the model from accessing future tokens while predicting the next token.
+
+# Artificial Intelligence Research
+
+Building a language model from scratch helps researchers understand the internal mechanisms of generative AI.
+
+Important research areas include efficient attention mechanisms, model optimization, tokenization strategies, context length extension, quantization, and inference acceleration.
+
+The performance of a language model depends on training data quality, model architecture, optimization strategy, computational resources, and evaluation methodology.
+
+A small language model can provide valuable experimental insights even when it cannot match the capabilities of large commercial language models.
