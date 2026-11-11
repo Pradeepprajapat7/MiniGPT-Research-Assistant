@@ -1,0 +1,10 @@
+
+torch
+transformers
+huggingface-hub
+tokenizers
+tqdm
+numpy
+pypdf
+sentence-transformers
+faiss-cpu
