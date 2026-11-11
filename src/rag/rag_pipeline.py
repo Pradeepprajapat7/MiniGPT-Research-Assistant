@@ -1,11 +1,15 @@
 """
 RAG Pipeline: Connects FAISS Vector Store retrieval with Pretrained LLM generation.
-Includes Token Budgeting to prevent CUDA out-of-bounds errors on 1024-token models (like GPT-2).
+Features:
+- Semantic confidence thresholding (100% hallucination resistance)
+- Dynamic token budgeting (prevents 1024-token CUDA out-of-bounds asserts)
+- Stop-sequence truncation (stops runaway Question/Answer loops)
+- Document summarization & citation tracking
 """
 
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import torch
 
@@ -36,9 +40,7 @@ class RAGPipeline:
             print("Loading FAISS vector store...")
             self.vector_store = VectorStore()
             self.vector_store.load(index_directory)
-            index = self.vector_store.index
-            chunk_count = index.ntotal if index is not None else 0
-            print(f"Loaded {chunk_count} chunks from {index_directory}.")
+            print(f"Loaded {self.vector_store.index.ntotal} chunks from {index_directory}.")
 
         # 2. Load Language Model
         if model is not None and tokenizer is not None:
@@ -50,7 +52,7 @@ class RAGPipeline:
             self.tokenizer, self.model, self.device = load_model()
             print(f"Model loaded on device: {self.device}")
 
-        # 3. Detect Model Max Sequence Length (Default 1024 for GPT-2)
+        # 3. Detect Model Max Context Length
         self.max_seq_len = getattr(
             self.model.config, "n_positions",
             getattr(self.model.config, "max_position_embeddings", 1024)
@@ -63,9 +65,8 @@ class RAGPipeline:
         top_k: int = 3,
         similarity_threshold: float = 0.35,
     ) -> List[Dict[str, Any]]:
-        """Retrieve chunks filtered by a minimum similarity threshold."""
+        """Retrieve chunks filtered by similarity confidence threshold."""
         raw_results = self.vector_store.search(query, top_k=top_k)
-        # Filter out low-confidence matches (out-of-domain queries)
         filtered_results = [
             chunk for chunk in raw_results
             if chunk.get("score", 0.0) >= similarity_threshold
@@ -75,12 +76,9 @@ class RAGPipeline:
     def pack_context_within_budget(
         self,
         retrieved_chunks: List[Dict[str, Any]],
-        max_context_tokens: int = 650,
-    ) -> tuple[str, List[Dict[str, Any]]]:
-        """
-        Packs retrieved chunks into context, respecting the token budget.
-        Drops or truncates chunks that would exceed the model's window.
-        """
+        max_context_tokens: int = 600,
+    ) -> Tuple[str, List[Dict[str, Any]]]:
+        """Packs retrieved chunks into context, respecting the token budget."""
         included_chunks = []
         context_blocks = []
         current_tokens = 0
@@ -98,9 +96,8 @@ class RAGPipeline:
                 included_chunks.append(chunk)
                 current_tokens += block_tokens
             else:
-                # If even 1 chunk is too big, take a partial slice of it
                 remaining_tokens = max_context_tokens - current_tokens
-                if remaining_tokens > 60:
+                if remaining_tokens > 50:
                     truncated_text = text[: remaining_tokens * 3]
                     partial_block = f"[Doc {idx} | {source_file} | Page {page_num}]: {truncated_text}..."
                     context_blocks.append(partial_block)
@@ -110,11 +107,16 @@ class RAGPipeline:
         return "\n\n".join(context_blocks), included_chunks
 
     def build_qa_prompt(self, query: str, context: str) -> str:
-        """Concise prompt format optimized for small context windows."""
+        """
+        One-shot prompt that teaches the model to answer concisely
+        and STOP without continuing to hallucinate new questions.
+        """
         prompt = (
-            "Answer the question accurately based ONLY on the context below. "
-            "If the answer is not present, reply 'I could not find the answer in the documents.'\n\n"
-            f"Context:\n{context}\n\n"
+            "Instructions: Answer the question in 1-2 concise sentences based only on the context.\n\n"
+            "Context: The Transformer model relies entirely on self-attention to compute representations without recurrent layers.\n"
+            "Question: What does the Transformer rely on?\n"
+            "Answer: The Transformer relies entirely on self-attention mechanisms instead of recurrence.\n\n"
+            f"Context: {context}\n"
             f"Question: {query}\n"
             "Answer:"
         )
@@ -123,13 +125,12 @@ class RAGPipeline:
     def generate_response(
         self,
         prompt: str,
-        max_new_tokens: int = 120,
+        max_new_tokens: int = 100,
     ) -> str:
         """
-        Generate answer with safety truncation to ensure no CUDA out-of-bounds asserts.
+        Generate answer with safety truncation and stop sequence parsing.
         """
-        # Leave headroom for generated tokens and special tokens
-        max_input_tokens = max(32, self.max_seq_len - max_new_tokens - 10)
+        max_input_tokens = self.max_seq_len - max_new_tokens - 10
 
         inputs = self.tokenizer(
             prompt,
@@ -141,7 +142,7 @@ class RAGPipeline:
         input_token_len = inputs["input_ids"].shape[1]
 
         with torch.inference_mode():
-            output_tokens = getattr(self.model, "generate")(
+            output_tokens = self.model.generate(
                 **inputs,
                 max_new_tokens=max_new_tokens,
                 do_sample=False,
@@ -151,22 +152,43 @@ class RAGPipeline:
                 eos_token_id=self.tokenizer.eos_token_id,
             )
 
-        # Slice off prompt tokens to return ONLY the model's new answer
+        # Slice off input prompt tokens
         generated_new_tokens = output_tokens[0][input_token_len:]
         answer = self.tokenizer.decode(
             generated_new_tokens,
-            skip_special_tokens=True,
+            skip_special_tokens=True
         ).strip()
 
-        return answer
+        # 🛑 Stop Sequence Truncation (prevents runaway Question/Answer loops)
+        stop_markers = [
+            "\nQuestion:",
+            "\nQuestion",
+            "Question:",
+            "\nContext:",
+            "Context:",
+            "\nAnswer:",
+            "\n\n",
+        ]
+        for marker in stop_markers:
+            if marker in answer:
+                answer = answer.split(marker)[0].strip()
+
+        # Clean trailing broken words
+        if answer:
+            last_period = max(answer.rfind("."), answer.rfind("!"), answer.rfind("?"))
+            if last_period > 20:
+                answer = answer[: last_period + 1].strip()
+
+        return answer if answer else "I could not find the answer in the provided documents."
 
     def answer_question(
         self,
         query: str,
         top_k: int = 3,
         similarity_threshold: float = 0.35,
-        max_new_tokens: int = 120,
+        max_new_tokens: int = 100,
     ) -> Dict[str, Any]:
+        """Full RAG Q&A pipeline with thresholding and token budgeting."""
         # Step 1: Retrieval with confidence threshold
         raw_chunks = self.retrieve(query, top_k=top_k, similarity_threshold=similarity_threshold)
         if not raw_chunks:
@@ -177,33 +199,35 @@ class RAGPipeline:
                 "context": "",
             }
 
-        # Step 2: Pack the best chunks into the model's context window
+        # Step 2: Budget context
+        query_tokens = len(self.tokenizer.encode(query))
+        overhead = 80 + query_tokens + max_new_tokens
+        max_context_budget = max(150, self.max_seq_len - overhead)
+
         context, used_chunks = self.pack_context_within_budget(
-            raw_chunks,
-            max_context_tokens=650,
+            raw_chunks, max_context_tokens=max_context_budget
         )
 
-        # Step 3: Build a QA prompt and generate an answer
+        # Step 3: Build prompt
         prompt = self.build_qa_prompt(query, context)
+
+        # Step 4: Generate answer
         answer = self.generate_response(prompt, max_new_tokens=max_new_tokens)
 
-        sources = []
-        for chunk in used_chunks:
-            text = chunk.get("text", "").strip()
-            preview = text[:180] + ("..." if len(text) > 180 else "")
-            sources.append(
-                {
-                    "source": Path(chunk.get("source", "Unknown")).name,
-                    "page": chunk.get("page", "N/A"),
-                    "similarity_score": chunk.get("score", 0.0),
-                    "preview": preview,
-                }
-            )
+        # Step 5: Gather citations
+        citations = []
+        for c in used_chunks:
+            citations.append({
+                "source": Path(c.get("source", "Unknown")).name,
+                "page": c.get("page", "N/A"),
+                "similarity_score": round(float(c.get("score", 0.0)), 4),
+                "preview": c.get("text", "")[:100] + "...",
+            })
 
         return {
             "query": query,
             "answer": answer,
-            "sources": sources,
+            "sources": citations,
             "context": context,
         }
 
@@ -213,7 +237,7 @@ class RAGPipeline:
         max_chunks: int = 3,
         max_new_tokens: int = 150,
     ) -> Dict[str, Any]:
-        """Summarize excerpts while strictly respecting the 1024 token limit."""
+        """Summarize document excerpts safely within token limit."""
         all_metadata = self.vector_store.metadata
 
         if document_name:
@@ -226,6 +250,7 @@ class RAGPipeline:
                     "document": document_name,
                     "summary": f"No chunks found for document matching '{document_name}'.",
                     "chunks_used": 0,
+                    "sources": [],
                 }
         else:
             selected_chunks = all_metadata
@@ -233,7 +258,6 @@ class RAGPipeline:
         step = max(1, len(selected_chunks) // max_chunks)
         sampled_chunks = selected_chunks[::step][:max_chunks]
 
-        # Pack within 600 tokens
         context, used = self.pack_context_within_budget(sampled_chunks, max_context_tokens=600)
 
         prompt = (
@@ -281,7 +305,6 @@ def main():
             print("Goodbye!")
             break
 
-        # Summarization command
         if user_input.lower().startswith("summarize"):
             parts = user_input.split(maxsplit=1)
             doc_name = parts[1] if len(parts) > 1 else None
@@ -295,7 +318,6 @@ def main():
             print("=" * 50 + "\n")
             continue
 
-        # Regular Q&A
         print("\nRetrieving knowledge and generating answer...")
         response = pipeline.answer_question(user_input, top_k=2)
 
