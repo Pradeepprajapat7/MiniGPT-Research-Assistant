@@ -36,7 +36,9 @@ class RAGPipeline:
             print("Loading FAISS vector store...")
             self.vector_store = VectorStore()
             self.vector_store.load(index_directory)
-            print(f"Loaded {self.vector_store.index.ntotal} chunks from {index_directory}.")
+            index = self.vector_store.index
+            chunk_count = index.ntotal if index is not None else 0
+            print(f"Loaded {chunk_count} chunks from {index_directory}.")
 
         # 2. Load Language Model
         if model is not None and tokenizer is not None:
@@ -55,9 +57,20 @@ class RAGPipeline:
         )
         print(f"Model context limit: {self.max_seq_len} tokens")
 
-    def retrieve(self, query: str, top_k: int = 3) -> List[Dict[str, Any]]:
-        """Retrieve top-k semantically matching chunks."""
-        return self.vector_store.search(query, top_k=top_k)
+    def retrieve(
+        self,
+        query: str,
+        top_k: int = 3,
+        similarity_threshold: float = 0.35,
+    ) -> List[Dict[str, Any]]:
+        """Retrieve chunks filtered by a minimum similarity threshold."""
+        raw_results = self.vector_store.search(query, top_k=top_k)
+        # Filter out low-confidence matches (out-of-domain queries)
+        filtered_results = [
+            chunk for chunk in raw_results
+            if chunk.get("score", 0.0) >= similarity_threshold
+        ]
+        return filtered_results
 
     def pack_context_within_budget(
         self,
@@ -116,7 +129,7 @@ class RAGPipeline:
         Generate answer with safety truncation to ensure no CUDA out-of-bounds asserts.
         """
         # Leave headroom for generated tokens and special tokens
-        max_input_tokens = self.max_seq_len - max_new_tokens - 10
+        max_input_tokens = max(32, self.max_seq_len - max_new_tokens - 10)
 
         inputs = self.tokenizer(
             prompt,
@@ -128,7 +141,7 @@ class RAGPipeline:
         input_token_len = inputs["input_ids"].shape[1]
 
         with torch.inference_mode():
-            output_tokens = self.model.generate(
+            output_tokens = getattr(self.model, "generate")(
                 **inputs,
                 max_new_tokens=max_new_tokens,
                 do_sample=False,
@@ -142,7 +155,7 @@ class RAGPipeline:
         generated_new_tokens = output_tokens[0][input_token_len:]
         answer = self.tokenizer.decode(
             generated_new_tokens,
-            skip_special_tokens=True
+            skip_special_tokens=True,
         ).strip()
 
         return answer
@@ -151,50 +164,46 @@ class RAGPipeline:
         self,
         query: str,
         top_k: int = 3,
+        similarity_threshold: float = 0.35,
         max_new_tokens: int = 120,
     ) -> Dict[str, Any]:
-        """
-        Full RAG pipeline with safe token budget calculation.
-        """
-        # Step 1: Retrieval
-        raw_chunks = self.retrieve(query, top_k=top_k)
+        # Step 1: Retrieval with confidence threshold
+        raw_chunks = self.retrieve(query, top_k=top_k, similarity_threshold=similarity_threshold)
         if not raw_chunks:
             return {
                 "query": query,
-                "answer": "No relevant documents found in the vector database.",
+                "answer": "I could not find the answer in the provided documents.",
                 "sources": [],
                 "context": "",
             }
 
-        # Step 2: Budget context (Reserve space for prompt template + question + new tokens)
-        query_tokens = len(self.tokenizer.encode(query))
-        overhead = 60 + query_tokens + max_new_tokens
-        max_context_budget = max(150, self.max_seq_len - overhead)
-
+        # Step 2: Pack the best chunks into the model's context window
         context, used_chunks = self.pack_context_within_budget(
-            raw_chunks, max_context_tokens=max_context_budget
+            raw_chunks,
+            max_context_tokens=650,
         )
 
-        # Step 3: Build prompt
+        # Step 3: Build a QA prompt and generate an answer
         prompt = self.build_qa_prompt(query, context)
-
-        # Step 4: Safe generation
         answer = self.generate_response(prompt, max_new_tokens=max_new_tokens)
 
-        # Step 5: Citations
-        citations = []
-        for c in used_chunks:
-            citations.append({
-                "source": Path(c.get("source", "Unknown")).name,
-                "page": c.get("page", "N/A"),
-                "similarity_score": round(float(c.get("score", 0.0)), 4),
-                "preview": c.get("text", "")[:100] + "...",
-            })
+        sources = []
+        for chunk in used_chunks:
+            text = chunk.get("text", "").strip()
+            preview = text[:180] + ("..." if len(text) > 180 else "")
+            sources.append(
+                {
+                    "source": Path(chunk.get("source", "Unknown")).name,
+                    "page": chunk.get("page", "N/A"),
+                    "similarity_score": chunk.get("score", 0.0),
+                    "preview": preview,
+                }
+            )
 
         return {
             "query": query,
             "answer": answer,
-            "sources": citations,
+            "sources": sources,
             "context": context,
         }
 
